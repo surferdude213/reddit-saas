@@ -1,78 +1,126 @@
 import streamlit as st
 import pandas as pd
-import random
 import datetime
+from openai import OpenAI
 
-# --- PAGE SETUP ---
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="Reddit Reputation SaaS", page_icon="🤖", layout="wide")
+
+# --- MULTI-USER LOGIN SYSTEM ---
+def check_password():
+    """Returns True if the user had the correct password."""
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if (
+            st.session_state["username"] == st.secrets["credentials"]["username"]
+            and st.session_state["password"] == st.secrets["credentials"]["password"]
+        ):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # remove password from session state
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show inputs
+        st.text_input("Username", key="username")
+        st.text_input("Password", type="password", key="password")
+        st.button("Log In", on_click=password_entered)
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error
+        st.text_input("Username", key="username")
+        st.text_input("Password", type="password", key="password")
+        st.button("Log In", on_click=password_entered)
+        st.error("😕 User not known or password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()  # Stop executing the rest of the app if not logged in
+
+# --- INITIALIZE OPENAI CLIENT ---
+client = OpenAI(api_key=st.secrets["openai"]["api_key"])
+
+# --- PERSISTENT STORAGE SIMULATION ---
+# In Streamlit Cloud, st.cache_resource keeps data alive across page refreshes for all sessions.
+@st.cache_resource
+def get_database():
+    return {
+        "keywords": ["CRM", "uptime", "HubSpot alternative"],
+        "logs": [],
+        "mentions": [
+            {
+                "id": "t3_1",
+                "subreddit": "r/saas",
+                "author": "tech_founder99",
+                "title": "Best alternative to HubSpot for tracking leads?",
+                "text": "Hey everyone, HubSpot is getting way too expensive for our small team. Looking for something lightweight, affordable, and with good analytics. Any suggestions?",
+                "sentiment": "Neutral",
+                "ai_draft": "Click 'Generate AI Draft' to process.",
+                "status": "Pending Review"
+            }
+        ]
+    }
+
+db = get_database()
+
+# --- AI GENERATION FUNCTION ---
+def generate_reddit_reply(post_title, post_text):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an expert brand reputation consultant on Reddit. Write a helpful, organic response to the user's post. Avoid sounding like an aggressive ad. Naturally weave in an objective recommendation for a product or helpful advice. Keep it concise, casual, and safe from sub-reddit AutoMod filters."},
+                {"role": "user", "content": f"Subreddit Post Title: {post_title}\nPost Body: {post_text}"}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ AI Error: {str(e)}"
+
+# --- MAIN APP INTERFACE ---
 st.title("📊 Reddit AI Reputation Management Dashboard")
-st.caption("Version 1.0 (Prototype) | AI-Assisted, Human-Approved Workflow")
+st.caption("🔒 Secured Enterprise Version | Connected to Live OpenAI Engine")
 
-# --- SESSION STATE INITIALIZATION (Simulating a Database) ---
-if "mentions" not in st.session_state:
-    st.session_state.mentions = [
-        {
-            "id": "t3_1",
-            "subreddit": "r/saas",
-            "author": "tech_founder99",
-            "title": "Best alternative to HubSpot for tracking leads?",
-            "text": "Hey everyone, HubSpot is getting way too expensive for our small team. Looking for something lightweight, affordable, and with good analytics. Any suggestions?",
-            "sentiment": "Neutral",
-            "ai_draft": "Hey there! If you are looking for a lightweight and affordable alternative to HubSpot, you should check out [Client_Name]. It focuses specifically on core analytics and pipeline tracking without the enterprise bloat. There's a free tier for small teams too!",
-            "status": "Pending Review"
-        },
-        {
-            "id": "t3_2",
-            "subreddit": "r/technology",
-            "author": "crypto_cat",
-            "title": "Is [Client_Name] down for anyone else today?",
-            "text": "Trying to access my dashboard for the last hour and getting a 502 Bad Gateway. Anyone else experiencing this right now or is it just me?",
-            "sentiment": "Negative",
-            "ai_draft": "Hi u/crypto_cat, we experienced a brief server hiccup affecting our dashboard routes, but our engineering team has fully resolved it. Everything should be running smoothly now! Let us know if you still see any errors.",
-            "status": "Pending Review"
-        }
-    ]
-
-if "approved_logs" not in st.session_state:
-    st.session_state.approved_logs = []
-
-# --- SIDEBAR: MONITORING CONTROLS ---
+# --- SIDEBAR: DATABASE TARGETS ---
 st.sidebar.header("🎯 Target Keywords")
-new_keyword = st.sidebar.text_input("Add Tracked Keyword:", placeholder="e.g., CRM, uptime, alternative")
+new_keyword = st.sidebar.text_input("Add Tracked Keyword:", placeholder="e.g., alternative, pricing")
 if st.sidebar.button("Add Keyword") and new_keyword:
-    st.sidebar.success(f"Now tracking: '{new_keyword}'")
+    if new_keyword not in db["keywords"]:
+        db["keywords"].append(new_keyword)
+        st.sidebar.success(f"Added: {new_keyword}")
+        st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Active Scrapers")
-st.sidebar.toggle("r/saas", value=True)
-st.sidebar.toggle("r/technology", value=True)
-st.sidebar.toggle("r/startups", value=True)
+st.sidebar.write("**Currently Tracking:**")
+for kw in db["keywords"]:
+    st.sidebar.write(f"- {kw}")
 
-# --- TOP LEVEL METRICS ---
+# --- METRICS ---
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric("Total Mentions Today", len(st.session_state.mentions) + len(st.session_state.approved_logs), delta="+12%")
+    st.metric("Total Active Keywords", len(db["keywords"]))
 with col2:
-    pending_count = sum(1 for m in st.session_state.mentions if m["status"] == "Pending Review")
-    st.metric("Pending Human Review", pending_count, delta=f"-{len(st.session_state.approved_logs)} resolved", delta_color="inverse")
+    pending_count = sum(1 for m in db["mentions"] if m["status"] == "Pending Review")
+    st.metric("Pending Action Queue", pending_count)
 with col3:
-    st.metric("Average AI Content Score", "94%", delta="Safe from AutoMod")
+    st.metric("Live Database Status", "Connected ✅")
 
 st.markdown("---")
 
-# --- MAIN WORKSPACE: REVIEW QUEUE ---
+# --- APPLICATION WORKFLOW QUEUE ---
 st.header("📥 Human-in-the-Loop AI Review Queue")
-st.info("Reddit guidelines require human confirmation. Edit the AI drafts below to ensure brand alignment before publishing.")
 
-pending_items = [m for m in st.session_state.mentions if m["status"] == "Pending Review"]
+pending_items = [m for m in db["mentions"] if m["status"] == "Pending Review"]
 
 if not pending_items:
-    st.success("🎉 All AI drafts have been reviewed and processed!")
+    st.success("🎉 All mentions processed! No pending items in database queue.")
 else:
     for idx, item in enumerate(pending_items):
         with st.container():
-            # Header Row
-            c1, c2, c3 = st.columns([1, 4, 1])
+            c1, c2, c3 = st.columns([1, 3, 1])
             with c1:
                 st.markdown(f"**{item['subreddit']}**")
                 st.caption(f"by u/{item['author']}")
@@ -80,40 +128,40 @@ else:
                 st.markdown(f"### {item['title']}")
                 st.write(item['text'])
             with c3:
-                if item['sentiment'] == "Negative":
-                    st.error(f"⚠️ {item['sentiment']}")
-                else:
-                    st.warning(f"ℹ️ {item['sentiment']}")
+                st.warning(f"ℹ️ {item['sentiment']}")
 
-            # AI Intervention Section
-            with st.expander("🤖 View AI Generated Action", expanded=True):
-                # Let user edit the draft live
+            # Live AI Interface
+            with st.expander("🤖 OpenAI Generation Engine", expanded=True):
+                if st.button("🔄 Generate Live AI Draft", key=f"gen_{item['id']}"):
+                    with st.spinner("AI is analyzing context..."):
+                        item["ai_draft"] = generate_reddit_reply(item["title"], item["text"])
+                        st.rerun()
+
                 edited_draft = st.text_area(
-                    "Refine response copy:", 
+                    "Refine copy before pushing:", 
                     value=item['ai_draft'], 
                     key=f"draft_{item['id']}"
                 )
                 
-                # Action buttons
-                b1, b2, b3 = st.columns([1, 1, 4])
+                b1, b2 = st.columns(2)
                 with b1:
                     if st.button("🚀 Push to Reddit", key=f"pub_{item['id']}"):
                         item["status"] = "Approved"
-                        st.session_state.approved_logs.append({
-                            "id": item["id"],
+                        db["logs"].append({
+                            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
                             "subreddit": item["subreddit"],
-                            "final_text": edited_draft,
-                            "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+                            "final_text": edited_draft
                         })
+                        st.success("Action logged to database feed!")
                         st.rerun()
                 with b2:
-                    if st.button("🗑️ Dismiss", key=f"rej_{item['id']}"):
+                    if st.button("🗑️ Dismiss Match", key=f"rej_{item['id']}"):
                         item["status"] = "Dismissed"
                         st.rerun()
             st.markdown("---")
 
-# --- AUDIT LOG / ACTIVITY FEED ---
-if st.session_state.approved_logs:
+# --- ACTIVITY LOGGER FEED ---
+if db["logs"]:
     st.header("📝 Live Activity Feed (Published Actions)")
-    df_logs = pd.DataFrame(st.session_state.approved_logs)
-    st.dataframe(df_logs[["timestamp", "subreddit", "final_text"]], use_container_width=True)
+    df_logs = pd.DataFrame(db["logs"])
+    st.dataframe(df_logs, use_container_width=True)
